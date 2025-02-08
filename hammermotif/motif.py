@@ -10,7 +10,7 @@ from itertools import product
 from scipy.stats import fisher_exact
 from statsmodels.stats.multitest import multipletests
 from sklearn.cluster import AffinityPropagation
-from tqdm import tqdm  # For progress bars
+from tqdm import tqdm
 
 # IUPAC nucleotide ambiguity codes
 IUPAC_CODES = {
@@ -22,16 +22,11 @@ IUPAC_CODES = {
 
 
 def parse_bed_file(bed_file_path, flank_size=7):
-    """
-    Parse a BED file to extract genomic locations.
-    :param bed_file_path: Path to the BED file
-    :param flank_size: Number of bases to extend on each side of the region
-    :return: List of dictionaries with genomic locations
-    """
+    """Parse BED file to extract genomic regions with flanking sequences."""
     locations = []
     with open(bed_file_path) as bed_file:
         for line in bed_file:
-            if line.startswith('#') or line.strip() == '':
+            if line.startswith('#') or not line.strip():
                 continue
             parts = line.strip().split()
             chrom, start, end = parts[0], int(parts[1]), int(parts[2])
@@ -48,125 +43,105 @@ def parse_bed_file(bed_file_path, flank_size=7):
 
 
 def extract_sequences(genomic_locations, genome_fasta):
-    """
-    Extract sequences from the genome based on BED file locations.
-    :param genomic_locations: List of locations from parse_bed_file
-    :param genome_fasta: Dictionary of chromosome sequences (from SeqIO.to_dict)
-    :return: List of SeqRecord objects
-    """
+    """Extract sequences from genome based on BED coordinates."""
     sequences = []
     for loc in genomic_locations:
         chrom = loc['chrom']
-        start = loc['start']
-        end = loc['end']
-        strand = loc['strand']
         if chrom not in genome_fasta:
             continue
-        sequence = genome_fasta[chrom].seq[start:end]
-        if strand == '-':
-            sequence = sequence.reverse_complement()
-        sequences.append(SeqRecord(sequence, id=f"{chrom}:{start}-{end}", description=""))
+        seq = genome_fasta[chrom].seq[loc['start']:loc['end']]
+        if loc['strand'] == '-':
+            seq = seq.reverse_complement()
+        sequences.append(SeqRecord(seq, id=f"{chrom}:{loc['start']}-{loc['end']}"))
     return sequences
 
 
 def generate_random_background(genome_fasta, num_sequences, seq_length):
-    """
-    Generate random background sequences from the longest chromosome.
-    :param genome_fasta: Dictionary of chromosome sequences
-    :param num_sequences: Number of background sequences to generate
-    :param seq_length: Length of each background sequence
-    :return: List of SeqRecord objects
-    """
-    background = []
-    # Find the longest chromosome
-    longest_chrom = max(genome_fasta.keys(), key=lambda x: len(genome_fasta[x]))
-    chrom_seq = genome_fasta[longest_chrom].seq
+    """Generate background sequences from all chromosomes ≥1.5x seq_length."""
+    valid_chroms = [c for c in genome_fasta if len(genome_fasta[c]) >= 1.5 * seq_length]
+    if not valid_chroms:
+        raise ValueError("No suitable chromosomes for background generation")
 
+    # Weight selection by chromosome length
+    chrom_weights = [len(genome_fasta[c]) for c in valid_chroms]
+    total_weight = sum(chrom_weights)
+
+    background = []
     for _ in range(num_sequences):
-        max_start = len(chrom_seq) - seq_length
+        # Select chromosome proportional to its length
+        selected_chrom = random.choices(valid_chroms, weights=chrom_weights, k=1)[0]
+        max_start = len(genome_fasta[selected_chrom]) - seq_length
         start = random.randint(0, max_start)
-        end = start + seq_length
-        sequence = chrom_seq[start:end]
-        background.append(SeqRecord(sequence, id=f"{longest_chrom}:{start}-{end}", description=""))
+        seq = genome_fasta[selected_chrom].seq[start:start + seq_length]
+        background.append(SeqRecord(seq, id=f"bg_{selected_chrom}:{start}-{start + seq_length}"))
     return background
 
 
 def degenerate_expansion(kmer):
-    """
-    Expand a degenerate k-mer into all possible non-degenerate combinations.
-    :param kmer: A k-mer potentially containing IUPAC codes
-    :return: List of all possible non-degenerate k-mers
-    """
+    """Expand degenerate motifs to all possible non-degenerate forms."""
     return [''.join(p) for p in product(*[IUPAC_CODES[base] for base in kmer])]
 
 
 def motif_to_regex(motif):
-    """
-    Convert a motif (potentially with IUPAC codes) to a regular expression.
-    :param motif: The motif to convert
-    :return: A regex pattern string
-    """
-    regex = []
-    for base in motif.upper():
-        bases = IUPAC_CODES.get(base, base)
-        if len(bases) == 1:
-            regex.append(bases)
-        else:
-            regex.append(f'[{bases}]')
-    return ''.join(regex)
+    """Convert IUPAC motif to regex pattern."""
+    return ''.join([f'[{IUPAC_CODES[base]}]' if base in IUPAC_CODES else base
+                    for base in motif.upper()])
 
 
 def enhanced_candidate_discovery(reg_seqs, bg_seqs, min_len, max_len):
-    """
-    Discover candidate motifs from regulatory sequences.
-    :param reg_seqs: List of SeqRecord objects (regulatory sequences)
-    :param bg_seqs: List of SeqRecord objects (background sequences)
-    :param min_len: Minimum motif length to consider
-    :param max_len: Maximum motif length to consider
-    :return: List of candidate motifs
-    """
+    """Discover candidate motifs with length-aware scoring."""
     candidates = []
+
     for k in range(min_len, max_len + 1):
-        # Scan all possible k-mers (including degenerate ones)
-        all_kmers = set()
+        # Collect all possible k-mers from regulatory sequences
+        reg_kmers = Counter()
         for seq in reg_seqs:
-            seq_str = str(seq.seq)
+            seq_str = str(seq.seq).upper()
             for i in range(len(seq_str) - k + 1):
                 kmer = seq_str[i:i + k]
                 if all(c in IUPAC_CODES for c in kmer):
-                    all_kmers.update(degenerate_expansion(kmer))
+                    reg_kmers.update(degenerate_expansion(kmer))
 
-        # Calculate weighted enrichment scores
+        # Calculate background frequencies
+        bg_kmers = Counter()
+        for seq in bg_seqs:
+            seq_str = str(seq.seq).upper()
+            for i in range(len(seq_str) - k + 1):
+                kmer = seq_str[i:i + k]
+                if all(c in IUPAC_CODES for c in kmer):
+                    bg_kmers.update(degenerate_expansion(kmer))
+
+        # Calculate length-normalized enrichment
         enrich_scores = {}
-        for kmer in all_kmers:
-            reg = sum(1 for seq in reg_seqs if kmer in str(seq.seq))
-            bg = sum(1 for seq in bg_seqs if kmer in str(seq.seq))
-            enrich = ((reg + 0.1) / len(reg_seqs)) / ((bg + 0.1) / len(bg_seqs)) * np.sqrt(k)
+        total_reg = sum(reg_kmers.values()) + 1e-6
+        total_bg = sum(bg_kmers.values()) + 1e-6
+
+        for kmer in reg_kmers:
+            reg_count = reg_kmers[kmer]
+            bg_count = bg_kmers.get(kmer, 0)
+            enrich = (reg_count / total_reg) / ((bg_count / total_bg) * np.log1p(k) +0.000001)
             enrich_scores[kmer] = enrich
 
-        # Retain top candidates for this length
+        # Retain top candidates per length
         sorted_kmers = sorted(enrich_scores.items(), key=lambda x: -x[1])
         candidates += [kmer for kmer, _ in sorted_kmers[:10]]
 
     return list(set(candidates))
 
 
-def precise_enrichment_with_pseudo(reg_seqs, bg_seqs, candidates, fdr_threshold):
-    """
-    Perform precise enrichment analysis with pseudo-counts.
-    :param reg_seqs: List of SeqRecord objects (regulatory sequences)
-    :param bg_seqs: List of SeqRecord objects (background sequences)
-    :param candidates: List of candidate motifs
-    :param fdr_threshold: Significance threshold after FDR correction
-    :return: Dictionary of significant motifs and their statistics
-    """
+def precise_enrichment_analysis(reg_seqs, bg_seqs, candidates, alpha=0.01):
+    """Perform rigorous enrichment analysis with multiple testing correction."""
     results = []
+
     for motif in tqdm(candidates, desc="Analyzing motifs"):
         k = len(motif)
-        reg_obs = sum(str(seq.seq).count(motif) for seq in reg_seqs)
-        bg_obs = sum(str(seq.seq).count(motif) for seq in bg_seqs)
+        pattern = re.compile(motif_to_regex(motif))
 
-        # Calculate total possible sites
+        # Count occurrences
+        reg_obs = sum(len(pattern.findall(str(seq.seq))) for seq in reg_seqs)
+        bg_obs = sum(len(pattern.findall(str(seq.seq))) for seq in bg_seqs)
+
+        # Calculate possible sites
         reg_total = sum(len(seq.seq) - k + 1 for seq in reg_seqs)
         bg_total = sum(len(seq.seq) - k + 1 for seq in bg_seqs)
 
@@ -178,59 +153,55 @@ def precise_enrichment_with_pseudo(reg_seqs, bg_seqs, candidates, fdr_threshold)
         results.append((motif, p, fold, reg_obs, bg_obs, reg_total, bg_total))
 
     # Multiple testing correction
-    p_values = [x[1] for x in results]
-    _, adj_p_values, _, _ = multipletests(p_values, alpha=fdr_threshold, method='fdr_bh')
+    pvals = [x[1] for x in results]
+    _, adj_pvals, _, _ = multipletests(pvals, alpha=alpha, method='fdr_bh')
 
     # Filter significant results
     significant = {}
-    for (motif, p, fold, reg_obs, bg_obs, reg_total, bg_total), adj_p in zip(results, adj_p_values):
-        if adj_p <= fdr_threshold:
+    for (motif, p, fold, r_obs, b_obs, r_tot, b_tot), adj_p in zip(results, adj_pvals):
+        if adj_p <= alpha and fold > 2:  # Minimum 2-fold enrichment
             significant[motif] = {
                 'p': p,
                 'adj_p': adj_p,
                 'fold': fold,
-                'reg_obs': reg_obs,
-                'bg_obs': bg_obs,
-                'reg_total': reg_total,
-                'bg_total': bg_total
+                'reg_obs': f"{r_obs}/{r_tot}",
+                'bg_obs': f"{b_obs}/{b_tot}"
             }
     return significant
 
 
-def cluster_motifs(motifs):
-    """
-    Cluster motifs based on sequence similarity.
-    :param motifs: List of motifs to cluster
-    :return: Dictionary mapping cluster IDs to lists of motifs
-    """
-    # Build distance matrix using Levenshtein distance
-    distance_matrix = np.zeros((len(motifs), len(motifs)))
+def cluster_motifs(motifs, damping=0.85):
+    """Cluster motifs using affinity propagation with adjusted parameters."""
+    # Create distance matrix
+    dist_matrix = np.zeros((len(motifs), len(motifs)))
     for i, m1 in enumerate(motifs):
         for j, m2 in enumerate(motifs):
-            distance_matrix[i, j] = levenshtein_distance(m1, m2)
+            dist_matrix[i, j] = levenshtein_distance(m1, m2)
 
-    # Affinity Propagation clustering
-    clusterer = AffinityPropagation(affinity='precomputed')
-    labels = clusterer.fit_predict(-distance_matrix)
+    # Apply clustering with adjusted parameters
+    clusterer = AffinityPropagation(
+        affinity='precomputed',
+        damping=damping,
+        max_iter=500,
+        random_state=42
+    )
+    labels = clusterer.fit_predict(-dist_matrix)
 
-    # Group motifs by cluster
-    clustered = defaultdict(list)
+    # Organize clusters
+    clusters = defaultdict(list)
     for motif, label in zip(motifs, labels):
-        clustered[label].append(motif)
-    return clustered
+        clusters[label].append(motif)
+
+    return clusters
 
 
 def levenshtein_distance(s1, s2):
-    """
-    Compute the Levenshtein distance between two strings.
-    :param s1: First string
-    :param s2: Second string
-    :return: Integer distance
-    """
+    """Calculate Levenshtein edit distance between two strings."""
     if len(s1) < len(s2):
         return levenshtein_distance(s2, s1)
     if len(s2) == 0:
         return len(s1)
+
     previous_row = range(len(s2) + 1)
     for i, c1 in enumerate(s1):
         current_row = [i + 1]
@@ -240,61 +211,60 @@ def levenshtein_distance(s1, s2):
             substitutions = previous_row[j] + (c1 != c2)
             current_row.append(min(insertions, deletions, substitutions))
         previous_row = current_row
+
     return previous_row[-1]
 
 
-def print_clustered_results(clusters, results_dict):
-    """
-    Print clustered results with representative motifs.
-    :param clusters: Dictionary of motif clusters
-    :param results_dict: Dictionary of motif statistics
-    """
-    print("Significant Motif Clusters:")
+def print_clustered_results(clusters, results):
+    """Format output for clustered motifs."""
+    print("\nSignificant Motif Clusters:")
     for cluster_id, motifs in clusters.items():
-        # Select the motif with the lowest p-value as the representative
-        rep_motif = min(motifs, key=lambda x: results_dict[x]['p'])
-        stats = results_dict[rep_motif]
-        print(f"Cluster {cluster_id} (Representative: {rep_motif})")
-        print(f"  Motifs: {', '.join(motifs)}")
-        print(f"  p-value: {stats['p']:.2e}, Adjusted p-value: {stats['adj_p']:.2e}")
-        print(f"  Fold Enrichment: {stats['fold']:.1f}x")
-        print(f"  Observed in Regions: {stats['reg_obs']}/{stats['reg_total']}")
-        print(f"  Observed in Background: {stats['bg_obs']}/{stats['bg_total']}\n")
+        # Find best representative
+        rep = min(motifs, key=lambda x: results[x]['p'])
+        stats = results[rep]
+        print(f"Cluster {cluster_id} (Representative: {rep})")
+        print(f"  Motifs: {', '.join(sorted(motifs, key=len, reverse=True))}")
+        print(f"  p-value: {stats['p']:.2e}, Adj.p: {stats['adj_p']:.2e}")
+        print(f"  Fold: {stats['fold']:.1f}x")
+        print(f"  Regions: {stats['reg_obs']} vs Background: {stats['bg_obs']}\n")
 
 
-def motif_enrichment_pipeline(bed_file, fasta_file, motifs=None, min_len=4, max_len=16, fdr_threshold=0.05):
-    """
-    Main pipeline for motif enrichment analysis.
-    :param bed_file: Path to the BED file
-    :param fasta_file: Path to the genome FASTA file
-    :param motifs: Optional list of known motifs to include
-    :param min_len: Minimum motif length to consider
-    :param max_len: Maximum motif length to consider
-    :param fdr_threshold: Significance threshold after FDR correction
-    """
-    # Load genome and extract sequences
+def motif_enrichment_pipeline(bed_file, fasta_file, motifs=None,
+                              min_len=3, max_len=5, fdr_threshold=0.01):
+    """Main analysis workflow."""
+    # Load data
     genome = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
     reg_seqs = extract_sequences(parse_bed_file(bed_file), genome)
-    bg_seqs = generate_random_background(genome, 5000, len(reg_seqs[0].seq))
+    if not reg_seqs:
+        raise ValueError("No regulatory sequences extracted")
 
-    # Discover candidates and perform enrichment analysis
-    candidate_motifs = enhanced_candidate_discovery(reg_seqs, bg_seqs, min_len, max_len)
-    if motifs:
-        candidate_motifs += [m.upper() for m in motifs]
-    significant = precise_enrichment_with_pseudo(reg_seqs, bg_seqs, candidate_motifs, fdr_threshold)
+    # Generate background
+    seq_len = len(reg_seqs[0].seq)
+    bg_seqs = generate_random_background(genome, 5000, seq_len)
 
-    # Cluster and print results
-    clustered = cluster_motifs(list(significant.keys()))
-    print_clustered_results(clustered, significant)
+    # Candidate discovery
+    candidates = enhanced_candidate_discovery(reg_seqs, bg_seqs, min_len, max_len)
+    if motifs:  # Add known motifs if provided
+        candidates += [m.upper() for m in motifs]
+
+    # Enrichment analysis
+    significant = precise_enrichment_analysis(reg_seqs, bg_seqs, candidates, fdr_threshold)
+    if not significant:
+        print("No significant motifs found")
+        return
+
+    # Clustering and output
+    clusters = cluster_motifs(list(significant.keys()), damping=0.9)
+    print_clustered_results(clusters, significant)
 
 
-# Example usage
 if __name__ == "__main__":
+    # Example usage matching your parameters
     motif_enrichment_pipeline(
         "methyl_sites.bed",
         "ecoli.fasta",
-        motifs=['CCWGG', 'GATC'],  # Known motifs to include
-        min_len=4,
-        max_len=8,
+        motifs=None,
+        min_len=3,
+        max_len=5,
         fdr_threshold=0.01
     )
