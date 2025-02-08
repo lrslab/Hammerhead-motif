@@ -38,9 +38,8 @@ class HammermotifTest(unittest.TestCase):
         motif_enrichment_pipeline(
             self.bed_file_path,
             self.genome,
-            motifs=None,  # Known motifs to include
             min_len=3,
-            max_len=5,
+            max_len=9,
             fdr_threshold=0.01
         )
 
