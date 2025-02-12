@@ -35,13 +35,13 @@ class HammermotifTest(unittest.TestCase):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        motif_enrichment_pipeline(
-            self.bed_file_path,
-            self.genome,
-            min_len=3,
-            max_len=9,
-            fdr_threshold=0.01
-        )
+        results=main(
+                self.bed_file_path,
+                self.genome,
+               k=5
+            )
+        print(results)
+
 
 
     def test_ccwggg(self):
