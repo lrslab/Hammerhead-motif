@@ -21,7 +21,7 @@ import unittest
 class HammermotifTest(unittest.TestCase):
     def setUp(self):
 
-        wkdir="/data/Dropbox/temp/hammermotif_test"
+        wkdir="/home/li/myapp/Hammerhead-motif/test"
         print(wkdir)
         print(os.listdir(wkdir))
         self.wkdir=wkdir
@@ -38,7 +38,7 @@ class HammermotifTest(unittest.TestCase):
         results=main(
                 self.bed_file_path,
                 self.genome,
-               k=5
+               k=7
             )
         print(results)
 

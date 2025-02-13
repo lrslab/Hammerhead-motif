@@ -14,7 +14,6 @@ from scipy.stats import chi2_contingency
 def parse_bed_file(bed_file_path, flank_size=7):
     """
     Parse a BED file and return a list of genomic regions with added flanking regions.
-
     Each region is a dictionary with keys: chrom, start, end, strand.
     """
     regions = []
@@ -95,7 +94,6 @@ def compute_chi2(obs, total_obs, obs_bg, total_bg):
     -------------------------------
     Modified|   obs    | total_obs - obs |
     BG      |  obs_bg  | total_bg - obs_bg |
-
     Compute the chi-square statistic (and p-value) for the table using chi2_contingency.
     """
     table = [[obs, obs_bg], [total_obs - obs, total_bg - obs_bg]]
@@ -110,17 +108,14 @@ def compute_chi2(obs, total_obs, obs_bg, total_bg):
 def greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold=500, max_motifs=20):
     """
     Iteratively extract motifs from the modified sequence set using a greedy algorithm.
-
     For each candidate k-mer (extracted from mod_seqs):
       - Count its occurrences in mod_seqs (obs) and in ref_seqs (obs_bg).
       - Compute the total possible positions in mod_seqs and ref_seqs.
       - Calculate a chi-square statistic comparing obs vs. obs_bg.
-
     The best candidate (with highest chi2 above chi2_threshold) is chosen as a motif.
     Then, all sequences in mod_seqs that contain this motif are removed,
     and the process repeats until no candidate motif passes the threshold
     or max_motifs have been extracted.
-
     Returns a list of tuples: (motif, chi2_value).
     """
     motifs_found = []
@@ -134,7 +129,6 @@ def greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold=500, max_motif
         total_obs = total_possible_positions(remaining_seqs, k)
         bg_counts = count_kmers_in_seqs(ref_seqs, k)
         total_bg = total_possible_positions(ref_seqs, k)
-
         best_motif = None
         best_chi2 = 0
         for motif, count in kmer_counts.items():
@@ -158,20 +152,88 @@ def greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold=500, max_motif
 
 
 ##############################################
-# 4. Main Pipeline
+# 4. Motif Merging (Clustering and Consensus)
+##############################################
+
+def degenerate_code(bases):
+    """
+    Map a sorted tuple of bases to an IUPAC degenerate code.
+    For example, ('A', 'T') returns 'W'.
+    """
+    mapping = {
+        ('A',): 'A',
+        ('C',): 'C',
+        ('G',): 'G',
+        ('T',): 'T',
+        ('A', 'C'): 'M',
+        ('A', 'G'): 'R',
+        ('A', 'T'): 'W',
+        ('C', 'G'): 'S',
+        ('C', 'T'): 'Y',
+        ('G', 'T'): 'K',
+        ('A', 'C', 'G'): 'V',
+        ('A', 'C', 'T'): 'H',
+        ('A', 'G', 'T'): 'D',
+        ('C', 'G', 'T'): 'B',
+        ('A', 'C', 'G', 'T'): 'N'
+    }
+    return mapping.get(tuple(sorted(bases)), 'N')
+
+
+def consensus_from_cluster(cluster):
+    """
+    Generate a consensus motif from a list of motifs (all of the same length).
+    At each position, use the set of bases from all motifs to produce a degenerate code.
+    """
+    if not cluster:
+        return ""
+    length = len(cluster[0])
+    consensus = []
+    for i in range(length):
+        letters = {motif[i] for motif in cluster}
+        consensus.append(degenerate_code(letters))
+    return ''.join(consensus)
+
+
+def merge_similar_motifs(motifs, max_distance=1):
+    """
+    Merge similar motifs by clustering those that have Hamming distance <= max_distance,
+    and generate a consensus motif for each cluster.
+    """
+    clusters = []
+    used = set()
+    motifs = list(motifs)
+    for i, m1 in enumerate(motifs):
+        if i in used:
+            continue
+        cluster = [m1]
+        used.add(i)
+        for j in range(i + 1, len(motifs)):
+            m2 = motifs[j]
+            if j in used or len(m1) != len(m2):
+                continue
+            if sum(a != b for a, b in zip(m1, m2)) <= max_distance:
+                cluster.append(m2)
+                used.add(j)
+        clusters.append(cluster)
+    merged = [consensus_from_cluster(cluster) for cluster in clusters]
+    return merged
+
+
+##############################################
+# 5. Main Pipeline
 ##############################################
 
 def main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7):
     """
     Complete pipeline starting from a BED file and a reference FASTA to extract final methylation motifs.
-
     1. Load the reference genome.
     2. Parse the BED file to get regions of modified sites.
     3. Extract sequences from these regions.
     4. Use the entire genome as background.
     5. Iteratively extract motifs using the greedy algorithm.
-
-    Prints the final motifs along with their chi2 statistic.
+    6. Merge similar motif variants to form consensus motifs.
+    Prints the final merged motifs along with their chi2 statistic.
     """
     # Load reference genome (as a dictionary of SeqRecords).
     genome = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
@@ -187,9 +249,16 @@ def main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7):
     ref_seqs = [str(rec.seq).upper() for rec in genome.values()]
     # Run the greedy motif extraction.
     final_motifs = greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold, max_motifs)
-    print("\nFinal extracted motifs:")
+    print("\nRaw extracted motifs:")
     for motif, chi2_val in final_motifs:
         print(f"Motif: {motif}, Chi2: {chi2_val:.2f}")
+
+    # Merge similar motifs to produce a consensus.
+    raw_motifs = [m for m, _ in final_motifs]
+    merged_motifs = merge_similar_motifs(raw_motifs, max_distance=1)
+    print("\nFinal merged motifs (consensus):")
+    for motif in merged_motifs:
+        print(motif)
 
 
 if __name__ == "__main__":
