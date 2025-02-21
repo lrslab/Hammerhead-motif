@@ -14,7 +14,7 @@
 Test set for clustercj mode
 """
 import os
-from hammermotif.motif_greedy import *
+from hammermotif.motif_mask import *
 import unittest
 
 
@@ -38,7 +38,8 @@ class HammermotifTest(unittest.TestCase):
         results=main(
                 self.bed_file_path,
                 self.genome,
-               k=7
+               k_small=4,
+                k_large=8
             )
         print(results)
 

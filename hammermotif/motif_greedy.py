@@ -195,6 +195,33 @@ def consensus_from_cluster(cluster):
     return ''.join(consensus)
 
 
+def extract_core(motif, core_length=4):
+    """
+    Extract the central core of the motif.
+    For a motif longer than core_length, return the central core; otherwise, return the motif.
+    """
+    L = len(motif)
+    if L <= core_length:
+        return motif
+    start = (L - core_length) // 2
+    return motif[start:start + core_length]
+
+
+def merge_by_core(motifs, core_length=4):
+    """
+    Group motifs by their extracted core (using the central core of length core_length)
+    and generate a consensus motif for each group.
+    """
+    core_groups = {}
+    for m in motifs:
+        core = extract_core(m, core_length)
+        if core not in core_groups:
+            core_groups[core] = []
+        core_groups[core].append(m)
+    merged = [consensus_from_cluster(group) for group in core_groups.values()]
+    return merged
+
+
 def merge_similar_motifs(motifs, max_distance=1):
     """
     Merge similar motifs by clustering those that have Hamming distance <= max_distance,
@@ -220,11 +247,65 @@ def merge_similar_motifs(motifs, max_distance=1):
     return merged
 
 
+def longest_common_substring(strings, min_length=4):
+    """
+    Given a list of strings, find the longest common substring of at least min_length.
+    Returns the longest substring common to all strings, or None if none found.
+    """
+    if not strings:
+        return None
+    reference = strings[0]
+    common_substrings = set()
+    L = len(reference)
+    for i in range(L):
+        for j in range(i + min_length, L + 1):
+            sub = reference[i:j]
+            common_substrings.add(sub)
+    for s in strings[1:]:
+        common_substrings = {sub for sub in common_substrings if sub in s}
+        if not common_substrings:
+            return None
+    # Return the longest common substring
+    return max(common_substrings, key=len) if common_substrings else None
+
+
+def finalize_cluster(cluster, min_common_length=4):
+    """
+    Given a cluster of motifs (strings), finalize the cluster by extracting the longest
+    common substring of length at least min_common_length.
+    If found, return it; otherwise, return the consensus from the cluster.
+    """
+    lcs = longest_common_substring(cluster, min_length=min_common_length)
+    if lcs:
+        return lcs
+    else:
+        return consensus_from_cluster(cluster)
+
+
+def merge_final_motifs(motifs, min_common_length=4, max_distance=1, core_length=4):
+    """
+    Merge a list of raw motifs using multiple strategies:
+      1. Merge by Hamming distance.
+      2. Merge by extracted core.
+      3. Finalize each cluster by extracting the longest common substring.
+    Returns the final list of merged motifs.
+    """
+    merged_hd = merge_similar_motifs(motifs, max_distance=max_distance)
+    merged_core = merge_by_core(motifs, core_length=core_length)
+    # Combine both sets and then finalize clusters by common substring.
+    combined = list(set(merged_hd + merged_core))
+    # If there are multiple motifs, further cluster them by common substring.
+    # For simplicity, we treat the entire list as one cluster and finalize.
+    final = finalize_cluster(combined, min_common_length=min_common_length)
+    return final
+
+
 ##############################################
 # 5. Main Pipeline
 ##############################################
 
-def main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7):
+def main(bed_file, fasta_file, k=7, chi2_threshold=500, max_motifs=20, flank=7,
+         core_length=4, min_common_length=4):
     """
     Complete pipeline starting from a BED file and a reference FASTA to extract final methylation motifs.
     1. Load the reference genome.
@@ -232,8 +313,9 @@ def main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7):
     3. Extract sequences from these regions.
     4. Use the entire genome as background.
     5. Iteratively extract motifs using the greedy algorithm.
-    6. Merge similar motif variants to form consensus motifs.
-    Prints the final merged motifs along with their chi2 statistic.
+    6. Merge similar motif variants using Hamming-distance and core-based methods.
+    7. Finalize the merged cluster by extracting the longest common substring.
+    Prints the final merged motif.
     """
     # Load reference genome (as a dictionary of SeqRecords).
     genome = SeqIO.to_dict(SeqIO.parse(fasta_file, "fasta"))
@@ -248,21 +330,25 @@ def main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7):
     # Use the entire genome as background.
     ref_seqs = [str(rec.seq).upper() for rec in genome.values()]
     # Run the greedy motif extraction.
-    final_motifs = greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold, max_motifs)
+    raw_motifs_with_stats = greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold, max_motifs)
     print("\nRaw extracted motifs:")
-    for motif, chi2_val in final_motifs:
+    for motif, chi2_val in raw_motifs_with_stats:
         print(f"Motif: {motif}, Chi2: {chi2_val:.2f}")
 
-    # Merge similar motifs to produce a consensus.
-    raw_motifs = [m for m, _ in final_motifs]
-    merged_motifs = merge_similar_motifs(raw_motifs, max_distance=1)
-    print("\nFinal merged motifs (consensus):")
-    for motif in merged_motifs:
-        print(motif)
+    # Extract just the raw motif strings.
+    raw_motifs = [m for m, _ in raw_motifs_with_stats]
+
+    # Merge similar motifs using our combined strategy.
+    final_motif = merge_final_motifs(raw_motifs, min_common_length=min_common_length,
+                                     max_distance=1, core_length=core_length)
+    print("\nFinal merged motif:")
+    print(final_motif)
 
 
 if __name__ == "__main__":
     # Example usage: adjust the file paths to your BED and FASTA files.
     bed_file = "methylation_sites.bed"  # BED file with modified site coordinates
     fasta_file = "genome.fasta"  # Reference genome FASTA
-    main(bed_file, fasta_file, k=6, chi2_threshold=500, max_motifs=20, flank=7)
+    # Adjust k, chi2_threshold, and merging parameters as needed.
+    main(bed_file, fasta_file, k=7, chi2_threshold=500, max_motifs=20, flank=7,
+         core_length=4, min_common_length=4)

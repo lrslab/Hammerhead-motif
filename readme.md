@@ -31,3 +31,15 @@ ecoli.fa.fai  enrichment.fa   mapping.sort.bam     potential_modification_site.t
 -  potential_modification_site.bed 
 -  ecoli.fa
 ```bash
+
+
+### the ways we tried for the motif enrichment methods
+1. Greedy method: give a K, caculate the enrichment fold and P value (or chi-sequre value) for each K-mer, get\
+the top K-mer with the highest enrichment fold and lowest P value one by one. Use the merge kmer function to \
+merge the similar one to IUPAC code to get the final motif.
+
+2. MEME like method: EM algorithm
+
+3. Gibbs sampling method: Gibbs sampling algorithm
+
+4. Homer method: mask and run
