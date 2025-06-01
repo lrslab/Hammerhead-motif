@@ -2,7 +2,7 @@
 #-*- coding: utf-8 -*-
 # @Time    : 17/6/2024 12:39
 # @Author  : Runsheng
-# @File    : test_motif.py
+# @File    : test_motif_greedy.py
 
 
 #!/usr/bin/env python
@@ -14,7 +14,7 @@
 Test set for clustercj mode
 """
 import os
-from hammermotif.motif_meme import *
+from hammermotif.motif_meme_EMnative import *
 import unittest
 
 

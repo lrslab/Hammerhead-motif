@@ -38,7 +38,7 @@ ecoli.fa.fai  enrichment.fa   mapping.sort.bam     potential_modification_site.t
 the top K-mer with the highest enrichment fold and lowest P value one by one. Use the merge kmer function to \
 merge the similar one to IUPAC code to get the final motif.
 
-2. MEME like method: EM algorithm
+2. Include MEME wrapper for motif enrichment 
 
 3. Gibbs sampling method: Gibbs sampling algorithm
 

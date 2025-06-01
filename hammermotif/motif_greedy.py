@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
+"""
+Greedy motif extraction module from hammermotif package.
+Optimized for speed with efficient algorithms.
+"""
 import os
 import re
-from collections import Counter
+from collections import Counter, defaultdict
+import numpy as np
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from scipy.stats import chi2_contingency
+import time
 
 
 ##############################################
@@ -59,95 +65,241 @@ def extract_sequences(regions, genome):
 
 
 ##############################################
-# 2. K-mer Counting and Statistics
+# 2. Optimized K-mer Counting and Statistics
 ##############################################
 
-def count_kmers_in_seqs(seqs, k):
+def count_kmers_optimized(seqs, k, seq_indices=None):
     """
-    Count all k-mers of length k in a list of sequences.
-    Only k-mers with letters A, C, G, T are counted.
-    Returns a Counter object mapping each k-mer to its count.
+    Optimized k-mer counting that tracks which sequences contain each k-mer.
+    Returns both counts and sequence indices for each k-mer.
     """
+    kmer_data = defaultdict(lambda: {'count': 0, 'seq_indices': set()})
+    
+    if seq_indices is None:
+        seq_indices = list(range(len(seqs)))
+    
+    # Pre-compile valid bases check
+    valid_bases = set("ACGT")
+    
+    for idx in seq_indices:
+        seq = seqs[idx]
+        seq_len = len(seq)
+        
+        # Skip if sequence is too short
+        if seq_len < k:
+            continue
+            
+        # Use sliding window
+        for i in range(seq_len - k + 1):
+            kmer = seq[i:i + k]
+            
+            # Fast check for valid k-mer
+            if all(base in valid_bases for base in kmer):
+                kmer_data[kmer]['count'] += 1
+                kmer_data[kmer]['seq_indices'].add(idx)
+    
+    return kmer_data
+
+
+def count_kmers_background(ref_seqs, k, sample_size=None):
+    """
+    Count k-mers in background sequences with optional sampling for speed.
+    """
+    if sample_size and len(ref_seqs) > sample_size:
+        # Sample sequences for faster computation
+        import random
+        sampled = random.sample(ref_seqs, sample_size)
+        total_sampled_len = sum(len(s) for s in sampled)
+        total_ref_len = sum(len(s) for s in ref_seqs)
+        scaling_factor = total_ref_len / total_sampled_len
+    else:
+        sampled = ref_seqs
+        scaling_factor = 1.0
+    
     counts = Counter()
-    for s in seqs:
-        for i in range(len(s) - k + 1):
-            kmer = s[i:i + k]
-            if all(base in "ACGT" for base in kmer):
+    valid_bases = set("ACGT")
+    
+    for seq in sampled:
+        seq_len = len(seq)
+        if seq_len < k:
+            continue
+            
+        for i in range(seq_len - k + 1):
+            kmer = seq[i:i + k]
+            if all(base in valid_bases for base in kmer):
                 counts[kmer] += 1
+    
+    # Scale counts if sampling was used
+    if scaling_factor > 1:
+        for kmer in counts:
+            counts[kmer] = int(counts[kmer] * scaling_factor)
+    
     return counts
 
 
-def total_possible_positions(seqs, k):
+def total_possible_positions(seqs, k, indices=None):
     """
-    Compute the total number of possible positions for a motif of length k in a list of sequences.
+    Compute the total number of possible positions for a motif of length k.
     """
-    total = 0
-    for s in seqs:
-        total += max(0, len(s) - k + 1)
-    return total
+    if indices is not None:
+        return sum(max(0, len(seqs[i]) - k + 1) for i in indices)
+    else:
+        return sum(max(0, len(s) - k + 1) for s in seqs)
 
 
-def compute_chi2(obs, total_obs, obs_bg, total_bg):
+def calculate_gc_content(seq):
+    """Calculate GC content of a sequence."""
+    gc_count = seq.count('G') + seq.count('C')
+    return gc_count / len(seq) if len(seq) > 0 else 0
+
+
+def is_low_complexity(seq, threshold=0.7):
+    """Check if sequence is low complexity (e.g., mostly one or two bases)."""
+    if len(seq) < 3:
+        return True
+    
+    # Check for single base repeats
+    for base in 'ACGT':
+        if seq.count(base) / len(seq) > threshold:
+            return True
+    
+    # Check for dinucleotide repeats
+    for i in range(len(seq) - 1):
+        dinuc = seq[i:i+2]
+        if seq.count(dinuc) * 2 / len(seq) > threshold:
+            return True
+    
+    return False
+
+
+def compute_chi2_fast(obs, total_obs, obs_bg, total_bg, gc_bias_correction=1.0):
     """
-    Build a 2x2 contingency table:
-          | Motif   | Other sites |
-    -------------------------------
-    Modified|   obs    | total_obs - obs |
-    BG      |  obs_bg  | total_bg - obs_bg |
-    Compute the chi-square statistic (and p-value) for the table using chi2_contingency.
+    Fast chi-square calculation with error handling and GC bias correction.
     """
-    table = [[obs, obs_bg], [total_obs - obs, total_bg - obs_bg]]
-    chi2, p, _, _ = chi2_contingency(table)
+    if total_obs <= 0 or total_bg <= 0 or obs > total_obs or obs_bg > total_bg:
+        return 0, 1
+    
+    # Expected frequency with GC bias correction
+    expected = (obs + obs_bg) * total_obs / (total_obs + total_bg) * gc_bias_correction
+    
+    if expected <= 0:
+        return 0, 1
+    
+    # Simple chi-square approximation for speed
+    chi2 = (obs - expected) ** 2 / expected
+    
+    # Very rough p-value approximation (not exact but fast)
+    if chi2 > 10.83:  # ~0.001 significance
+        p = 0.0001
+    elif chi2 > 6.64:  # ~0.01 significance
+        p = 0.01
+    elif chi2 > 3.84:  # ~0.05 significance
+        p = 0.05
+    else:
+        p = 0.5
+    
     return chi2, p
 
 
 ##############################################
-# 3. Greedy Motif Extraction (Final Motif Finding)
+# 3. Optimized Greedy Motif Extraction
 ##############################################
 
 def greedy_motif_extraction(mod_seqs, ref_seqs, k, chi2_threshold=500, max_motifs=20):
     """
-    Iteratively extract motifs from the modified sequence set using a greedy algorithm.
-    For each candidate k-mer (extracted from mod_seqs):
-      - Count its occurrences in mod_seqs (obs) and in ref_seqs (obs_bg).
-      - Compute the total possible positions in mod_seqs and ref_seqs.
-      - Calculate a chi-square statistic comparing obs vs. obs_bg.
-    The best candidate (with highest chi2 above chi2_threshold) is chosen as a motif.
-    Then, all sequences in mod_seqs that contain this motif are removed,
-    and the process repeats until no candidate motif passes the threshold
-    or max_motifs have been extracted.
-    Returns a list of tuples: (motif, chi2_value).
+    Optimized greedy motif extraction with better AT-rich filtering.
     """
+    print(f"\nOptimized greedy extraction for k={k}")
+    start_time = time.time()
+    
     motifs_found = []
-    remaining_seqs = mod_seqs.copy()
+    remaining_indices = set(range(len(mod_seqs)))
+    
+    # Calculate genome GC content for bias correction
+    genome_gc = np.mean([calculate_gc_content(seq) for seq in ref_seqs[:5]])
+    print(f"  Genome GC content: {genome_gc:.2%}")
+    
+    # Pre-compute background k-mer counts once (with sampling for speed)
+    print("  Computing background model...")
+    bg_counts = count_kmers_background(ref_seqs, k, sample_size=min(len(ref_seqs), 5))
+    total_bg = sum(max(0, len(s) - k + 1) for s in ref_seqs[:5]) * (len(ref_seqs) / 5)
+    
     iteration = 1
-    while remaining_seqs and len(motifs_found) < max_motifs:
-        print(f"Iteration {iteration}: {len(remaining_seqs)} sequences remaining")
-        kmer_counts = count_kmers_in_seqs(remaining_seqs, k)
-        if not kmer_counts:
+    while len(remaining_indices) > 0 and len(motifs_found) < max_motifs:
+        if iteration % 5 == 1:
+            print(f"  Iteration {iteration}: {len(remaining_indices)} sequences remaining")
+        
+        # Count k-mers only in remaining sequences
+        kmer_data = count_kmers_optimized(mod_seqs, k, remaining_indices)
+        
+        if not kmer_data:
             break
-        total_obs = total_possible_positions(remaining_seqs, k)
-        bg_counts = count_kmers_in_seqs(ref_seqs, k)
-        total_bg = total_possible_positions(ref_seqs, k)
+        
+        total_obs = total_possible_positions(mod_seqs, k, remaining_indices)
+        
         best_motif = None
-        best_chi2 = 0
-        for motif, count in kmer_counts.items():
-            bg_count = bg_counts.get(motif, 0)
-            chi2, p = compute_chi2(count, total_obs, bg_count, total_bg)
-            # Choose the candidate with highest chi2 above the threshold.
-            if chi2 > best_chi2 and chi2 >= chi2_threshold:
+        best_chi2 = chi2_threshold
+        best_seq_indices = set()
+        
+        # Evaluate only top k-mers by count for speed
+        top_kmers = sorted(kmer_data.items(), 
+                          key=lambda x: x[1]['count'], 
+                          reverse=True)[:100]  # Only check top 100
+        
+        for kmer, data in top_kmers:
+            count = data['count']
+            seq_indices = data['seq_indices']
+            
+            # Skip if too few occurrences
+            if count < 5:
+                continue
+            
+            # Filter out low complexity sequences
+            if is_low_complexity(kmer):
+                continue
+            
+            # Calculate GC content of k-mer
+            kmer_gc = calculate_gc_content(kmer)
+            
+            # Skip extremely AT-rich or GC-rich k-mers unless they're very enriched
+            if (kmer_gc < 0.2 or kmer_gc > 0.8) and count < 20:
+                continue
+            
+            # Calculate GC bias correction factor
+            # If k-mer GC is very different from genome GC, apply correction
+            gc_diff = abs(kmer_gc - genome_gc)
+            gc_bias_correction = 1.0
+            if gc_diff > 0.3:  # More than 30% difference
+                gc_bias_correction = 1.5  # Require higher enrichment
+            
+            bg_count = bg_counts.get(kmer, 1)  # Avoid zero
+            chi2, p = compute_chi2_fast(count, total_obs, bg_count, total_bg, gc_bias_correction)
+            
+            # Additional filter: require higher chi2 for AT-rich motifs
+            if kmer_gc < 0.3:  # AT-rich
+                chi2 = chi2 * 0.5  # Reduce chi2 score
+            
+            # Choose the candidate with highest chi2
+            if chi2 > best_chi2:
                 best_chi2 = chi2
-                best_motif = motif
+                best_motif = kmer
+                best_seq_indices = seq_indices
+        
         if best_motif is None:
-            print("No candidate motif exceeded the chi2 threshold.")
             break
+        
         motifs_found.append((best_motif, best_chi2))
-        print(f"Selected motif: {best_motif} (chi2={best_chi2:.2f})")
-        # Remove all sequences that contain the best motif.
-        pattern = re.compile(best_motif)
-        new_remaining = [s for s in remaining_seqs if not pattern.search(s)]
-        remaining_seqs = new_remaining
+        if iteration <= 10:
+            motif_gc = calculate_gc_content(best_motif)
+            print(f"    Selected: {best_motif} (χ²={best_chi2:.0f}, GC={motif_gc:.2f}, {len(best_seq_indices)} seqs)")
+        
+        # Remove sequences containing the motif
+        remaining_indices -= best_seq_indices
         iteration += 1
+    
+    elapsed = time.time() - start_time
+    print(f"  Completed in {elapsed:.1f} seconds")
+    
     return motifs_found
 
 
