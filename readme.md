@@ -1,4 +1,62 @@
-# the motif enrichment functions for hammerhead output
+# Hammerhead Motif Discovery Package
+
+A comprehensive Python package for discovering DNA methylation motifs in bacterial genomes from Hammerhead output.
+
+## Overview
+
+This package provides multiple algorithms for discovering DNA methylation motifs from bacterial genome sequences and modification site data:
+
+- **Greedy k-mer extraction** with chi-square statistics
+- **MEME integration** for position weight matrix discovery  
+- **Gapped motif discovery** for complex motifs like CAYNNNNNRTG
+- **Statistical enrichment analysis** with hypergeometric tests
+- **Batch processing** for multiple genomes
+
+## Installation
+
+```bash
+conda activate py3  # Or your preferred environment
+# Ensure MEME suite is installed and in PATH
+```
+
+## Quick Start
+
+```bash
+# Analyze all genomes in test/all directory
+python methylation_motif_caller.py
+
+# Or analyze a single genome
+python methylation_motif_caller.py genome.fa modifications.bed output_dir
+```
+
+## Documentation
+
+- **Detailed usage and algorithms**: See [README_METHYLATION_CALLER.md](README_METHYLATION_CALLER.md)
+- **Package components**: See [PACKAGE_SUMMARY.md](PACKAGE_SUMMARY.md)
+- **Example scripts**: See the `test/` directory
+
+## Package Structure
+
+```
+.
+├── methylation_motif_caller.py   # Main general-purpose script
+├── hammermotif/                  # Core package modules
+│   ├── meme_runner.py           # MEME integration
+│   ├── motif_greedy.py          # Greedy algorithm
+│   └── ...                      # Other modules
+└── test/                        # Test data and example scripts
+    ├── all/                     # Test genomes and BED files
+    ├── example_single_genome.py # Example usage script
+    └── test_*.py               # Various test scripts
+```
+
+## Key Features
+
+- Discovers both simple (GATC) and complex gapped motifs (CAYNNNNNRTG)
+- Handles IUPAC degenerate codes
+- Optimized for speed (5-15 seconds per genome)
+- Comprehensive statistical analysis
+- Detailed reports with enrichment statistics
 
 
 ### get example data and run hammerhead to get the bed file indicating the modifided sites

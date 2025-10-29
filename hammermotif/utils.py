@@ -222,6 +222,60 @@ def process_large_genome(genome_dict):
         logging.info(f"Chromosome {chrom} average GC content: {avg_gc:.2f}%")
 
 
+def calculate_gc_content(seq):
+    """Calculate GC content of a sequence."""
+    gc_count = seq.count('G') + seq.count('C')
+    return gc_count / len(seq) if len(seq) > 0 else 0
+
+
+def is_low_complexity(seq, threshold=0.7):
+    """Check if sequence is low complexity (e.g., mostly one or two bases)."""
+    if len(seq) < 3:
+        return True
+    
+    # Check for single base repeats
+    for base in 'ACGT':
+        if seq.count(base) / len(seq) > threshold:
+            return True
+    
+    # Check for dinucleotide repeats
+    for i in range(len(seq) - 1):
+        dinuc = seq[i:i+2]
+        if seq.count(dinuc) * 2 / len(seq) > threshold:
+            return True
+    
+    return False
+
+
+def compute_chi2_fast(obs, total_obs, obs_bg, total_bg, gc_bias_correction=1.0):
+    """
+    Fast chi-square calculation with error handling and GC bias correction.
+    """
+    if total_obs <= 0 or total_bg <= 0 or obs > total_obs or obs_bg > total_bg:
+        return 0, 1
+    
+    # Expected frequency with GC bias correction
+    expected = (obs + obs_bg) * total_obs / (total_obs + total_bg) * gc_bias_correction
+    
+    if expected <= 0:
+        return 0, 1
+    
+    # Simple chi-square approximation for speed
+    chi2 = (obs - expected) ** 2 / expected
+    
+    # Very rough p-value approximation (not exact but fast)
+    if chi2 > 10.83:  # ~0.001 significance
+        p = 0.0001
+    elif chi2 > 6.64:  # ~0.01 significance
+        p = 0.01
+    elif chi2 > 3.84:  # ~0.05 significance
+        p = 0.05
+    else:
+        p = 0.5
+    
+    return chi2, p
+
+
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(

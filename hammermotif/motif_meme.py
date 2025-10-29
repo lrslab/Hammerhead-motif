@@ -4,14 +4,16 @@
 # @Author  : Runsheng
 # @File    : motif_meme.py
 
+"""
+This module handles running MEME and managing the MEME process.
+"""
 
 import os
 import logging
 from pathlib import Path
-from utils import read_bed_file, read_fasta_file, create_background_model
-from meme_runner import run_meme, parse_meme_output
-from utils import extract_sequences
-from statistical_analysis import assess_motif_significance
+from .utils import read_bed_file, read_fasta_file, create_background_model, extract_sequences
+from .meme_runner import run_meme, parse_meme_output
+from .stat import assess_motif_significance
 
 logging.basicConfig(
     level=logging.INFO,
